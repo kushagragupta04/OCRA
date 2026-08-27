@@ -1,0 +1,10 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/approvals/page": "app/approvals/page.js",
+  "/meetings/page": "app/meetings/page.js",
+  "/meetings/[id]/page": "app/meetings/[id]/page.js",
+  "/page": "app/page.js",
+  "/sandbox/page": "app/sandbox/page.js",
+  "/audit/page": "app/audit/page.js",
+  "/settings/page": "app/settings/page.js"
+}

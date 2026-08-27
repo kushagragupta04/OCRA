@@ -1,0 +1,44 @@
+# OS
+.DS_Store
+
+# Frontend (Node.js/Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backend (Python)
+backend/venv/
+backend/__pycache__/
+backend/.pytest_cache/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/env/
+backend/pip-log.txt
+backend/pip-delete-this-directory.txt
+backend/.coverage
+backend/htmlcov/
+backend/.tox/
+backend/.nox/
+backend/nosetests.xml
+backend/coverage.xml
+backend/*.cover
+backend/*.log
+backend/ocra.db
+
+# Environment Variables
+.env
+backend/.env
+frontend/.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
