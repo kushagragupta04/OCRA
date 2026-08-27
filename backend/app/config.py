@@ -26,8 +26,23 @@ class Settings(BaseSettings):
     JIRA_CLOUD_ID: Optional[str] = None
     JIRA_SITE_URL: Optional[str] = None
     
+    # GitHub Issues Connector
+    GITHUB_TOKEN: Optional[str] = None
+    GITHUB_DEFAULT_REPO: Optional[str] = None  # "owner/repo"
+    GITHUB_API_BASE: str = "https://api.github.com"
+
+    # Google Calendar Connector (OAuth2 / 3LO — same pattern as Jira)
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/integrations/calendar/callback"
+    GOOGLE_OAUTH_ACCESS_TOKEN: Optional[str] = None
+    GOOGLE_CALENDAR_ID: str = "primary"
+    GOOGLE_CALENDAR_API_BASE: str = "https://www.googleapis.com/calendar/v3"
+
     # Adapter Mode
     USE_MOCK_JIRA: bool = True
+    USE_MOCK_GITHUB: bool = True
+    USE_MOCK_CALENDAR: bool = True
     
     # Policy Defaults
     DEFAULT_PROJECT_KEY: str = "PAY"

@@ -64,8 +64,10 @@ class ExecutionInfo(BaseModel):
     operation: str
     idempotency_key: str
     status: str
+    target_connector: str = "jira"
     jira_issue_key: Optional[str] = None
     jira_response_id: Optional[str] = None
+    external_url: Optional[str] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     retry_count: int = 0

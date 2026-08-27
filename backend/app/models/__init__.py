@@ -1,6 +1,6 @@
 from app.models.meeting import Meeting
 from app.models.transcript_segment import TranscriptSegment
-from app.models.action import Action
+from app.models.action import Action, JiraActionDetail, TaskDependency
 from app.models.evidence import Evidence
 from app.models.execution import Execution
 from app.models.approval import Approval
@@ -11,6 +11,8 @@ __all__ = [
     "Meeting",
     "TranscriptSegment",
     "Action",
+    "JiraActionDetail",
+    "TaskDependency",
     "Evidence",
     "Execution",
     "Approval",

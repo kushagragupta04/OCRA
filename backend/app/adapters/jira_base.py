@@ -1,13 +1,25 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
+
 from app.schemas.jira import JiraProject, JiraIssue, JiraUser, JiraTransition
+from app.adapters.connector_base import (
+    TaskConnector,
+    ConnectorResult,
+    WorkflowItemPayload,
+)
+from app.config import settings
 
 
-class JiraAdapter(ABC):
+class JiraAdapter(TaskConnector, ABC):
     """
     Abstract Base Class for Jira / Work Management Systems.
     Enforces a standard contract so reasoning engines never directly call HTTP endpoints.
+
+    Implements the blueprint's :class:`TaskConnector` contract (Section 15) on top of
+    the Jira-native operations below, so Jira is just one ``TaskConnector`` among many.
     """
+
+    connector_name = "jira"
 
     @abstractmethod
     async def get_projects(self) -> List[JiraProject]:
@@ -68,3 +80,67 @@ class JiraAdapter(ABC):
     async def get_users(self, query: Optional[str] = None) -> List[JiraUser]:
         """Search Jira users accessible to the project."""
         pass
+
+    # ------------------------------------------------------------------ #
+    # TaskConnector contract (blueprint Section 15) — concrete, shared    #
+    # by every Jira adapter (cloud + mock). Translates the normalized     #
+    # WorkflowItemPayload into Jira's field schema.                       #
+    # ------------------------------------------------------------------ #
+    def _issue_url(self, issue_key: str) -> Optional[str]:
+        site = (settings.JIRA_SITE_URL or "").rstrip("/")
+        return f"{site}/browse/{issue_key}" if site else None
+
+    def _payload_to_fields(self, item: WorkflowItemPayload) -> Dict[str, Any]:
+        fields: Dict[str, Any] = {
+            "project": {"key": item.extra.get("project_key") or "PAY"},
+            "summary": item.title,
+            "issuetype": {"name": item.extra.get("issue_type") or "Task"},
+            "priority": {"name": item.priority or "Medium"},
+        }
+        if item.description:
+            fields["description"] = item.description
+        if item.due_at:
+            fields["duedate"] = item.due_at
+        if item.assignee:
+            fields["assignee"] = {"accountId": item.assignee}
+        return fields
+
+    async def create_task(self, item: WorkflowItemPayload) -> ConnectorResult:
+        try:
+            issue = await self.create_issue({"fields": self._payload_to_fields(item)})
+            return ConnectorResult.ok(
+                connector=self.connector_name,
+                external_id=issue.id,
+                external_key=issue.key,
+                external_url=self._issue_url(issue.key),
+                raw=issue.model_dump(mode="json"),
+            )
+        except Exception as e:  # noqa: BLE001 - surfaced as a ConnectorResult
+            return ConnectorResult.fail(str(e), connector=self.connector_name)
+
+    async def update_task(self, external_id: str, item: WorkflowItemPayload) -> ConnectorResult:
+        try:
+            issue = await self.update_issue(external_id, {"fields": self._payload_to_fields(item)})
+            return ConnectorResult.ok(
+                connector=self.connector_name,
+                external_id=issue.id,
+                external_key=issue.key,
+                external_url=self._issue_url(issue.key),
+                raw=issue.model_dump(mode="json"),
+            )
+        except Exception as e:  # noqa: BLE001
+            return ConnectorResult.fail(str(e), connector=self.connector_name)
+
+    async def delete_task(self, external_id: str) -> ConnectorResult:
+        # Jira issues are not hard-deleted from the execution path; soft-close instead.
+        try:
+            issue = await self.transition_issue(external_id, "Done")
+            return ConnectorResult.ok(
+                connector=self.connector_name,
+                external_id=getattr(issue, "id", None),
+                external_key=getattr(issue, "key", external_id),
+                external_url=self._issue_url(getattr(issue, "key", external_id)),
+                raw={"soft_deleted": True},
+            )
+        except Exception as e:  # noqa: BLE001
+            return ConnectorResult.fail(str(e), connector=self.connector_name)

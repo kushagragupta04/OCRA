@@ -10,9 +10,23 @@ from app.models.action import Action
 from app.models.execution import Execution
 from app.models.evidence import Evidence
 from app.models.meeting import Meeting
-from app.adapters import get_jira_adapter, JiraAdapter, JiraADFBuilder
+from app.adapters import (
+    get_jira_adapter,
+    get_connector,
+    JiraAdapter,
+    JiraADFBuilder,
+    TaskConnector,
+    CalendarConnector,
+    ConnectorResult,
+    WorkflowItemPayload,
+)
 from app.services.audit_service import AuditService
 from app.utils.hashing import compute_idempotency_key
+from app.config import settings
+
+
+def _connector_key(action: Action) -> str:
+    return (getattr(action, "target_connector", None) or "jira").strip().lower()
 
 
 class ExecutionService:
@@ -22,11 +36,16 @@ class ExecutionService:
         db: AsyncSession,
         action_id: str,
         actor: str = "system:executor",
-        jira: Optional[JiraAdapter] = None
+        jira: Optional[JiraAdapter] = None,
+        connector: Optional[Any] = None,
     ) -> Execution:
         """
-        Executes a single approved or auto-executable action against Jira
-        with strict idempotency key protection and rollback/audit recording.
+        Executes a single approved or auto-executable action against its
+        ``target_connector`` (Jira / GitHub / Google Calendar) with strict
+        idempotency key protection and rollback/audit recording.
+
+        The Jira path is unchanged; ``connector`` may be injected for tests
+        (mirrors the existing ``jira`` injection).
         """
         adapter = jira or get_jira_adapter()
 
@@ -50,7 +69,11 @@ class ExecutionService:
             "TRANSITION": "TRANSITION_ISSUE",
             "CONFLICT": "HANDLE_CONFLICT"
         }
+        connector_key = _connector_key(action)
         operation = operation_map.get(action.action_type, "CUSTOM_MUTATION")
+        if connector_key not in ("jira", ""):
+            # Generic connector op labels (kept idempotency-stable per connector).
+            operation = "CREATE_EVENT" if connector_key in ("google_calendar", "calendar") else operation
         fingerprint = f"{action.id}:{action.summary}:{action.action_type}"
         idem_key = compute_idempotency_key(action.meeting_id, fingerprint, operation)
 
@@ -76,6 +99,19 @@ class ExecutionService:
         
         action.status = "EXECUTING"
         await db.commit()
+
+        # 4b. Non-Jira connectors (GitHub Issues / Google Calendar) dispatch here.
+        # The Jira path below is untouched for connector_key == "jira".
+        if connector_key not in ("jira", ""):
+            return await cls._execute_via_connector(
+                db=db,
+                action=action,
+                exec_record=exec_record,
+                connector_key=connector_key,
+                operation=operation,
+                actor=actor,
+                injected_connector=connector,
+            )
 
         # 5. Execute Jira Mutation
         evidence_dicts = [
@@ -177,8 +213,11 @@ class ExecutionService:
 
             # 6. Mark Success
             exec_record.status = "SUCCESS"
+            exec_record.target_connector = "jira"
             exec_record.jira_issue_key = res_key
             exec_record.jira_response_id = res_id
+            if res_key and (settings.JIRA_SITE_URL or ""):
+                exec_record.external_url = f"{settings.JIRA_SITE_URL.rstrip('/')}/browse/{res_key}"
             exec_record.error_code = None
             exec_record.error_message = None
 
@@ -213,3 +252,92 @@ class ExecutionService:
                 after_state={"error": str(e)}
             )
             raise e
+
+    # ------------------------------------------------------------------ #
+    # Non-Jira connector dispatch (blueprint Sections 15 & 18).          #
+    # Unlike the Jira path, a connector failure is *recorded* on the     #
+    # Execution row and returned (not raised) so one failing connector   #
+    # never fails a whole multi-tool workflow.                           #
+    # ------------------------------------------------------------------ #
+    @classmethod
+    async def _execute_via_connector(
+        cls,
+        db: AsyncSession,
+        action: Action,
+        exec_record: Execution,
+        connector_key: str,
+        operation: str,
+        actor: str,
+        injected_connector: Optional[Any] = None,
+    ) -> Execution:
+        adapter = injected_connector or get_connector(connector_key)
+
+        meeting_title = action.meeting.title if action.meeting else "Engineering Sync"
+        evidence_dicts = [
+            {"start_ms": ev.start_ms, "end_ms": ev.end_ms, "evidence_text": ev.evidence_text}
+            for ev in action.evidence
+        ]
+
+        payload = WorkflowItemPayload(
+            source_action_id=action.id,
+            idempotency_key=exec_record.idempotency_key,
+            item_type=(getattr(action, "item_type", None) or "TASK"),
+            title=action.summary,
+            description=action.description,
+            assignee=action.owner_account_id or action.owner_name,
+            priority=action.priority or "Medium",
+            due_at=action.due_at,
+            start_time=action.due_at,
+            meeting_title=meeting_title,
+            reason=action.reason,
+            evidence=evidence_dicts,
+            extra={
+                "project_key": action.project_key,
+                "issue_type": action.issue_type,
+                "repo": settings.GITHUB_DEFAULT_REPO,
+                "calendar_id": settings.GOOGLE_CALENDAR_ID,
+            },
+        )
+
+        try:
+            if isinstance(adapter, CalendarConnector) or connector_key in ("google_calendar", "calendar"):
+                result: ConnectorResult = await adapter.create_event(payload)
+            else:
+                result = await adapter.create_task(payload)
+        except Exception as e:  # noqa: BLE001 - normalized into a ConnectorResult
+            result = ConnectorResult.fail(str(e), connector=connector_key)
+
+        exec_record.target_connector = connector_key
+        if result.success:
+            exec_record.status = "SUCCESS"
+            exec_record.jira_issue_key = result.external_key
+            exec_record.jira_response_id = result.external_id
+            exec_record.external_url = result.external_url
+            exec_record.error_code = None
+            exec_record.error_message = None
+            action.status = "COMPLETED"
+        else:
+            exec_record.status = "FAILED"
+            exec_record.error_code = f"{connector_key.upper()}_EXECUTION_ERROR"
+            exec_record.error_message = result.error
+            action.status = "FAILED"
+
+        await db.commit()
+
+        await AuditService.log_event(
+            db=db,
+            actor=actor,
+            event_type="EXECUTION_SUCCESS" if result.success else "EXECUTION_FAILED",
+            meeting_id=action.meeting_id,
+            action_id=action.id,
+            before_state={"status": "PROPOSED", "action_type": action.action_type},
+            after_state={
+                "status": action.status,
+                "connector": connector_key,
+                "operation": operation,
+                "external_id": result.external_id,
+                "external_url": result.external_url,
+                "error": result.error,
+            },
+        )
+        return exec_record

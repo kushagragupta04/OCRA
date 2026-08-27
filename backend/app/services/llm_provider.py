@@ -55,6 +55,8 @@ Output strictly valid JSON matching this schema:
   "actions": [
     {{
       "action_type": "CREATE" | "UPDATE" | "ASSIGN" | "COMMENT" | "SHIFT_DEADLINE" | "TRANSITION" | "CONFLICT",
+      "item_type": "TASK" | "DECISION" | "EVENT" | "DEPENDENCY" | "RISK" | "QUESTION",
+      "temp_id": "Optional stable id so other items can reference this one in `dependencies`",
       "summary": "Clear action summary",
       "description": "Details",
       "target_issue_key": "Optional Jira Key if mentioned",
@@ -68,6 +70,7 @@ Output strictly valid JSON matching this schema:
       "reason": "Why this action was extracted",
       "transition_name": "Optional transition",
       "conflict_summary": "Optional explanation if this decision drops or replaces previous work",
+      "dependencies": ["temp_id or exact summary of another item this one depends on"],
       "evidence": [
         {{
           "segment_id": "seg_001",
@@ -189,6 +192,7 @@ Output strictly valid JSON matching this schema:
                     confidence=0.92,
                     risk="LOW",
                     reason="Explicit feature assignment to Priya.",
+                    dependencies=["Implement OAuth 2.0 Backend Architecture"],
                     evidence=[
                         LLMEvidenceItem(
                             segment_id=s.get("id", "seg_002"),

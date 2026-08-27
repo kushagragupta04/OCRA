@@ -1,12 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.database import get_db
 from app.models.jira_config import JiraConfig
 from app.schemas.jira import JiraProject, JiraConfigUpdate, JiraConfigResponse, JiraUser
-from app.adapters import get_jira_adapter, get_sandbox_adapter
+from app.adapters import (
+    get_jira_adapter,
+    get_sandbox_adapter,
+    get_github_adapter,
+    get_calendar_adapter,
+)
 from app.config import settings
 
 router = APIRouter(prefix="/api/integrations/jira", tags=["Integrations"])
@@ -112,3 +118,90 @@ async def reset_sandbox():
     sandbox = get_sandbox_adapter()
     sandbox.reset()
     return {"message": "Jira Mock Sandbox successfully reset to initial backlog state."}
+
+
+# ===================================================================== #
+# GitHub Issues integration (blueprint Section 15.1)                     #
+# ===================================================================== #
+github_router = APIRouter(prefix="/api/integrations/github", tags=["Integrations"])
+
+
+class GithubConnectRequest(BaseModel):
+    token: Optional[str] = None
+    default_repo: Optional[str] = None  # "owner/repo"
+
+
+@github_router.post("/connect")
+async def connect_github(payload: GithubConnectRequest):
+    """
+    Start/complete the GitHub connection flow.
+
+    Mirrors the Jira connection endpoint's shape. A real deployment would run the
+    GitHub OAuth flow and persist the token server-side; here we accept a PAT /
+    fine-grained token (or fall back to the credential-free mock sandbox).
+    """
+    if payload.token:
+        settings.GITHUB_TOKEN = payload.token
+        settings.USE_MOCK_GITHUB = False
+    if payload.default_repo:
+        settings.GITHUB_DEFAULT_REPO = payload.default_repo
+
+    adapter = get_github_adapter()
+    mode = "mock" if adapter.__class__.__name__.endswith("MockSandboxAdapter") else "live"
+    repos: List[str] = []
+    try:
+        repos = [r.full_name for r in await adapter.get_repos()]
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"GitHub connection failed: {e}")
+
+    return {
+        "connected": True,
+        "provider": "github",
+        "mode": mode,
+        "default_repo": settings.GITHUB_DEFAULT_REPO,
+        "repos_available": repos,
+    }
+
+
+@github_router.get("/repos")
+async def list_github_repos():
+    """List repositories accessible to the configured GitHub connector."""
+    adapter = get_github_adapter()
+    return {"repos": [r.model_dump() for r in await adapter.get_repos()]}
+
+
+# ===================================================================== #
+# Google Calendar integration (blueprint Section 15.1)                   #
+# ===================================================================== #
+calendar_router = APIRouter(prefix="/api/integrations/calendar", tags=["Integrations"])
+
+
+class CalendarConnectRequest(BaseModel):
+    access_token: Optional[str] = None   # OAuth2 access token (3LO — same pattern as Jira)
+    calendar_id: Optional[str] = None
+
+
+@calendar_router.post("/connect")
+async def connect_calendar(payload: CalendarConnectRequest):
+    """
+    Start/complete the Google Calendar connection flow.
+
+    Uses the same OAuth2 3LO pattern as Jira (see the Jira integration flow):
+    the browser completes consent, the backend exchanges the code for an access
+    token and stores it server-side. Here we accept the token directly or fall
+    back to the credential-free mock.
+    """
+    if payload.access_token:
+        settings.GOOGLE_OAUTH_ACCESS_TOKEN = payload.access_token
+        settings.USE_MOCK_CALENDAR = False
+    if payload.calendar_id:
+        settings.GOOGLE_CALENDAR_ID = payload.calendar_id
+
+    adapter = get_calendar_adapter()
+    mode = "mock" if adapter.__class__.__name__.endswith("MockAdapter") else "live"
+    return {
+        "connected": True,
+        "provider": "google_calendar",
+        "mode": mode,
+        "calendar_id": settings.GOOGLE_CALENDAR_ID,
+    }
