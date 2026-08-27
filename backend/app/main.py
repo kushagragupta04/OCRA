@@ -6,6 +6,8 @@ from app.config import settings
 from app.database import init_db
 from app.routers import (
     integrations_router,
+    github_integrations_router,
+    calendar_integrations_router,
     meetings_router,
     actions_router,
     executions_router,
@@ -39,6 +41,8 @@ app.add_middleware(
 
 # Mount API routers
 app.include_router(integrations_router)
+app.include_router(github_integrations_router)
+app.include_router(calendar_integrations_router)
 app.include_router(meetings_router)
 app.include_router(actions_router)
 app.include_router(executions_router)

@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.meeting import Meeting
 from app.models.transcript_segment import TranscriptSegment
-from app.models.action import Action
+from app.models.action import Action, JiraActionDetail, TaskDependency
 from app.models.evidence import Evidence
 from app.models.audit import AuditEvent
 from app.services.llm_provider import LLMProvider
@@ -67,10 +67,22 @@ class ExtractionService:
 
         # 5. Map and persist Actions & Evidence
         action_ids: List[str] = []
+        # Resolution table so intra-meeting dependencies can be linked after persistence.
+        # Keyed by both the LLM-provided temp id and the (normalized) summary.
+        ref_to_action_id: Dict[str, str] = {}
+        # (dependent_action_id, [raw dependency references]) pairs, resolved in step 6.
+        pending_dependencies: List[tuple] = []
 
         for item in extraction_res.actions:
             action_id = str(uuid.uuid4())
             action_ids.append(action_id)
+
+            temp_id = getattr(item, "temp_id", None)
+            if temp_id:
+                ref_to_action_id[temp_id.strip().lower()] = action_id
+            ref_to_action_id[item.summary.strip().lower()] = action_id
+            if getattr(item, "dependencies", None):
+                pending_dependencies.append((action_id, list(item.dependencies)))
             
             # Resolve owner name to Jira accountId
             resolved_account_id = None
@@ -92,10 +104,14 @@ class ExtractionService:
                     "risk_level": item.risk
                 })
 
+            item_type = (getattr(item, "item_type", None) or "TASK").upper()
+
             action = Action(
                 id=action_id,
                 meeting_id=meeting_id,
                 action_type=item.action_type,
+                item_type=item_type,
+                target_connector="jira",
                 summary=item.summary,
                 description=item.description,
                 target_issue_key=item.target_issue_key,
@@ -114,6 +130,17 @@ class ExtractionService:
             )
             db.add(action)
 
+            # Mirror vendor-specific fields into the connector detail row so the
+            # core workflow item stays connector-agnostic (blueprint Section 12).
+            db.add(JiraActionDetail(
+                id=str(uuid.uuid4()),
+                action_id=action_id,
+                target_issue_key=item.target_issue_key,
+                project_key=item.project_key or project_key,
+                issue_type=item.issue_type or "Task",
+                transition_name=item.transition_name,
+            ))
+
             # Persist linked evidence items
             for ev in item.evidence:
                 ev_obj = Evidence(
@@ -126,13 +153,36 @@ class ExtractionService:
                 )
                 db.add(ev_obj)
 
+        # 6. Build the workflow dependency graph (blueprint Section 11 "TaskDependency").
+        dependency_edges = 0
+        seen_edges = set()
+        for dependent_id, refs in pending_dependencies:
+            for raw_ref in refs:
+                if not raw_ref:
+                    continue
+                depends_on_id = ref_to_action_id.get(str(raw_ref).strip().lower())
+                # Skip unresolved references and self-loops.
+                if not depends_on_id or depends_on_id == dependent_id:
+                    continue
+                edge = (dependent_id, depends_on_id)
+                if edge in seen_edges:
+                    continue
+                seen_edges.add(edge)
+                db.add(TaskDependency(
+                    id=str(uuid.uuid4()),
+                    task_id=dependent_id,
+                    depends_on_task_id=depends_on_id,
+                    dependency_type="blocks",
+                ))
+                dependency_edges += 1
+
         # Record Audit
         audit = AuditEvent(
             id=str(uuid.uuid4()),
             actor="system:llm_extractor",
             meeting_id=meeting_id,
             event_type="ACTIONS_EXTRACTED",
-            after_state=f'{{"actions_count": {len(action_ids)}}}'
+            after_state=f'{{"actions_count": {len(action_ids)}, "dependency_edges": {dependency_edges}}}'
         )
         db.add(audit)
 

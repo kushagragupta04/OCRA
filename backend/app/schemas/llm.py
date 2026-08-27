@@ -11,6 +11,8 @@ class LLMEvidenceItem(BaseModel):
 
 class LLMExtractedAction(BaseModel):
     action_type: str = Field(description="Action type: CREATE, UPDATE, ASSIGN, COMMENT, SHIFT_DEADLINE, TRANSITION, CONFLICT, or NO_ACTION")
+    item_type: str = Field(default="TASK", description="Workflow item classification: TASK, DECISION, EVENT, DEPENDENCY, RISK, or QUESTION")
+    temp_id: Optional[str] = Field(default=None, description="Optional stable temp id for this item so other items can reference it in `dependencies`")
     summary: str = Field(description="Clear, concise action summary")
     description: Optional[str] = Field(default=None, description="Detailed description or context")
     target_issue_key: Optional[str] = Field(default=None, description="Target Jira issue key if explicitly mentioned or referenced, e.g. PAY-104")
@@ -24,6 +26,10 @@ class LLMExtractedAction(BaseModel):
     reason: str = Field(description="Why this action was extracted from the conversation")
     transition_name: Optional[str] = Field(default=None, description="Target workflow state if moving ticket")
     conflict_summary: Optional[str] = Field(default=None, description="If this decision drops, replaces, or contradicts prior work")
+    dependencies: List[str] = Field(
+        default_factory=list,
+        description="Items this action depends on. Each entry references another action's `temp_id` or its exact `summary`.",
+    )
     evidence: List[LLMEvidenceItem] = Field(description="List of timestamped transcript segments supporting this action")
 
 

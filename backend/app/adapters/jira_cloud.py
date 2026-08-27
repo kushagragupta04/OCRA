@@ -10,6 +10,10 @@ class JiraCloudAdapter(JiraAdapter):
     """
     Production Jira Cloud REST API v3 Adapter.
     Uses Atlassian OAuth 2.0 (3LO) Bearer tokens and communicates with Atlassian Cloud gateway.
+
+    Implements the blueprint ``TaskConnector`` contract (Section 15) via
+    :class:`JiraAdapter` — ``create_task`` / ``update_task`` / ``delete_task`` are
+    provided there and delegate to the Jira-native methods below.
     """
 
     def __init__(self, cloud_id: Optional[str] = None, access_token: Optional[str] = None):

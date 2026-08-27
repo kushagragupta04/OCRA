@@ -10,6 +10,10 @@ class JiraMockSandboxAdapter(JiraAdapter):
     In-memory, deterministic Jira Cloud v3 Simulator.
     Allows complete, zero-dependency execution and testing of Jira operations,
     transitions, JQL search, duplicate matching, and audit logging.
+
+    Implements the blueprint ``TaskConnector`` contract (Section 15) via
+    :class:`JiraAdapter`; ``create_task`` / ``update_task`` / ``delete_task`` work
+    against this sandbox with no credentials.
     """
 
     def __init__(self):
